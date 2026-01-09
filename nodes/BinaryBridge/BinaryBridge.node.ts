@@ -212,45 +212,14 @@ export class BinaryBridge implements INodeType {
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const operation = this.getNodeParameter('operation', 0) as string;
+		const storageDriver = this.getNodeParameter('storageDriver', 0) as string;
 		const bucket = this.getNodeParameter('bucket', 0) as string;
-		const region = this.getNodeParameter('region', 0) as string;
 
 		if (!bucket) {
 			throw new NodeOperationError(this.getNode(), 'Bucket name is required');
 		}
 
-		if (!region) {
-			throw new NodeOperationError(this.getNode(), 'Region is required');
-		}
-
-		let credentials;
-		try {
-			credentials = await this.getCredentials('awsS3Api');
-		} catch (error) {
-			throw new NodeOperationError(
-				this.getNode(),
-				`Failed to get S3 credentials: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-
-		const accessKeyId = credentials.accessKeyId as string;
-		const secretAccessKey = credentials.secretAccessKey as string;
-
-		if (!accessKeyId || !secretAccessKey) {
-			throw new NodeOperationError(this.getNode(), 'S3 credentials are incomplete. Please check your AWS credentials');
-		}
-
-		const endpoint = this.getNodeParameter('endpoint', 0) as string;
-		const forcePathStyle = this.getNodeParameter('forcePathStyle', 0) as boolean;
-
-		const storage = new S3Storage({
-			accessKeyId,
-			secretAccessKey,
-			region,
-			bucket,
-			endpoint: endpoint || undefined,
-			forcePathStyle,
-		});
+		const storage = await this.createStorageDriver(this, storageDriver, bucket);
 
 		if (operation === 'upload') {
 			return handleUpload(this, items, storage);
@@ -259,6 +228,75 @@ export class BinaryBridge implements INodeType {
 		}
 
 		throw new NodeOperationError(this.getNode(), `Unknown operation: ${operation}`);
+	}
+
+	async createStorageDriver(context: IExecuteFunctions, storageDriver: string, bucket: string): Promise<StorageDriver> {
+		if (storageDriver === 's3') {
+			const region = context.getNodeParameter('region', 0) as string;
+
+			if (!region) {
+				throw new NodeOperationError(context.getNode(), 'Region is required for S3 storage');
+			}
+
+			let credentials;
+			try {
+				credentials = await context.getCredentials('awsS3Api');
+			} catch (error) {
+				throw new NodeOperationError(
+					context.getNode(),
+					`Failed to get S3 credentials: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+
+			const accessKeyId = credentials.accessKeyId as string;
+			const secretAccessKey = credentials.secretAccessKey as string;
+
+			if (!accessKeyId || !secretAccessKey) {
+				throw new NodeOperationError(context.getNode(), 'S3 credentials are incomplete. Please check your AWS credentials');
+			}
+
+			const endpoint = context.getNodeParameter('endpoint', 0) as string;
+			const forcePathStyle = context.getNodeParameter('forcePathStyle', 0) as boolean;
+
+			return new S3Storage({
+				accessKeyId,
+				secretAccessKey,
+				region,
+				bucket,
+				endpoint: endpoint || undefined,
+				forcePathStyle,
+			});
+		} else if (storageDriver === 'supabase') {
+			const projectUrl = context.getNodeParameter('projectUrl', 0) as string;
+
+			if (!projectUrl) {
+				throw new NodeOperationError(context.getNode(), 'Project URL is required for Supabase storage');
+			}
+
+			let credentials;
+			try {
+				credentials = await context.getCredentials('supabaseApi');
+			} catch (error) {
+				throw new NodeOperationError(
+					context.getNode(),
+					`Failed to get Supabase credentials: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+
+			const apiKey = credentials.apiKey as string;
+
+			if (!apiKey) {
+				throw new NodeOperationError(context.getNode(), 'Supabase API key is incomplete. Please check your Supabase credentials');
+			}
+
+			return new SupabaseStorage({
+				projectUrl,
+				apiKey,
+				bucket,
+			});
+		}
+
+		throw new NodeOperationError(context.getNode(), `Unknown storage driver: ${storageDriver}`);
 	}
 
 	async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
@@ -290,9 +328,8 @@ export class BinaryBridge implements INodeType {
 		}
 
 		const bucket = this.getNodeParameter('bucket', 0) as string;
-		const region = this.getNodeParameter('region', 0) as string;
 
-		if (!bucket || !region) {
+		if (!bucket) {
 			return {
 				webhookResponse: {
 					status: 500,
@@ -304,47 +341,21 @@ export class BinaryBridge implements INodeType {
 			};
 		}
 
-		let credentials;
+		const storageDriver = this.getNodeParameter('storageDriver', 0) as string;
+		let storage;
 		try {
-			credentials = await this.getCredentials('awsS3Api');
+			storage = await this.createStorageDriver(this, storageDriver, bucket);
 		} catch (error) {
 			return {
 				webhookResponse: {
 					status: 500,
-					body: JSON.stringify({ error: 'Failed to get S3 credentials' }),
+					body: JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
 					headers: {
 						'Content-Type': 'application/json',
 					},
 				},
 			};
 		}
-
-		const accessKeyId = credentials.accessKeyId as string;
-		const secretAccessKey = credentials.secretAccessKey as string;
-
-		if (!accessKeyId || !secretAccessKey) {
-			return {
-				webhookResponse: {
-					status: 500,
-					body: JSON.stringify({ error: 'S3 credentials are incomplete' }),
-					headers: {
-						'Content-Type': 'application/json',
-					},
-				},
-			};
-		}
-
-		const endpoint = this.getNodeParameter('endpoint', 0) as string;
-		const forcePathStyle = this.getNodeParameter('forcePathStyle', 0) as boolean;
-
-		const storage = new S3Storage({
-			accessKeyId,
-			secretAccessKey,
-			region,
-			bucket,
-			endpoint: endpoint || undefined,
-			forcePathStyle,
-		});
 
 		try {
 			const { stream, contentType } = await storage.downloadStream(fileKey);
