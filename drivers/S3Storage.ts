@@ -1,12 +1,3 @@
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  DeleteObjectCommand,
-  S3ServiceException,
-} from '@aws-sdk/client-s3';
-import { Readable } from 'stream';
-
 export interface StorageConfig {
   accessKeyId: string;
   secretAccessKey: string;
@@ -22,108 +13,276 @@ export interface UploadResult {
 }
 
 export interface DownloadResult {
-  stream: Readable;
+  data: Buffer;
   contentType: string;
 }
 
 export class S3Storage {
-  private s3Client: S3Client;
-  private bucket: string;
+  private config: StorageConfig;
 
   constructor(config: StorageConfig) {
-    this.s3Client = new S3Client({
-      region: config.region,
-      credentials: {
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-      },
-      endpoint: config.endpoint,
-      forcePathStyle: config.forcePathStyle ?? false,
-    });
-    this.bucket = config.bucket;
+    this.config = config;
   }
 
   async uploadStream(
-    stream: Readable,
+    data: Buffer,
     contentType: string,
     metadata?: Record<string, string>
   ): Promise<UploadResult> {
     const fileKey = this.generateFileKey(contentType);
+    const endpoint = this.getEndpoint();
+    const url = `${endpoint}/${this.config.bucket}/${fileKey}`;
+
+    const headers: Record<string, string> = {
+      'Content-Type': contentType,
+      'x-amz-content-sha256': 'UNSIGNED-PAYLOAD',
+    };
+
+    if (metadata) {
+      Object.entries(metadata).forEach(([key, value]) => {
+        headers[`x-amz-meta-${key}`] = value;
+      });
+    }
+
+    const authorization = await this.generateAuthorization(
+      'PUT',
+      `/${this.config.bucket}/${fileKey}`,
+      headers
+    );
 
     try {
-      const command = new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: fileKey,
-        Body: stream,
-        ContentType: contentType,
-        Metadata: metadata || {},
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          ...headers,
+          Authorization: authorization,
+        },
+        body: data,
       });
 
-      await this.s3Client.send(command);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `S3 upload failed: ${response.status} ${response.statusText} - ${errorText}`
+        );
+      }
 
       return {
         fileKey,
         contentType,
       };
     } catch (error) {
-      if (error instanceof S3ServiceException) {
-        if (error.name === 'NoSuchBucket') {
-          throw new Error(`S3 bucket "${this.bucket}" does not exist or is not accessible`);
-        }
-        if (error.name === 'AccessDenied') {
-          throw new Error(
-            `Access denied to S3 bucket "${this.bucket}". Check your credentials and bucket permissions`
-          );
-        }
-        throw new Error(`S3 upload failed: ${error.message}`);
+      if (error instanceof Error) {
+        throw error;
       }
-      throw error;
+      throw new Error(`S3 upload failed: ${String(error)}`);
     }
   }
 
   async downloadStream(fileKey: string): Promise<DownloadResult> {
+    const endpoint = this.getEndpoint();
+    const url = `${endpoint}/${this.config.bucket}/${fileKey}`;
+
+    const authorization = await this.generateAuthorization(
+      'GET',
+      `/${this.config.bucket}/${fileKey}`,
+      {}
+    );
+
     try {
-      const command = new GetObjectCommand({
-        Bucket: this.bucket,
-        Key: fileKey,
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: authorization,
+        },
       });
 
-      const response = await this.s3Client.send(command);
-
-      if (!response.Body) {
-        throw new Error(`File not found: ${fileKey}`);
-      }
-
-      const body = response.Body as any;
-      const stream = body instanceof Readable ? body : Readable.from(response.Body as any);
-
-      return {
-        stream,
-        contentType: response.ContentType || 'application/octet-stream',
-      };
-    } catch (error) {
-      if (error instanceof S3ServiceException) {
-        if (error.name === 'NoSuchKey' || error.name === 'NotFound') {
+      if (!response.ok) {
+        if (response.status === 404) {
           throw new Error(`File not found: ${fileKey}`);
         }
-        if (error.name === 'AccessDenied') {
+        if (response.status === 403) {
           throw new Error(
-            `Access denied to S3 bucket "${this.bucket}". Check your credentials and bucket permissions`
+            `Access denied to bucket "${this.config.bucket}". Check your credentials`
           );
         }
-        throw new Error(`S3 download failed: ${error.message}`);
+        throw new Error(`S3 download failed: ${response.status} ${response.statusText}`);
       }
-      throw error;
+
+      const contentType = response.headers.get('content-type') || 'application/octet-stream';
+      const arrayBuffer = await response.arrayBuffer();
+      const data = Buffer.from(arrayBuffer);
+
+      return {
+        data,
+        contentType,
+      };
+    } catch (error) {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(`S3 download failed: ${String(error)}`);
     }
   }
 
   async deleteFile(fileKey: string): Promise<void> {
-    const command = new DeleteObjectCommand({
-      Bucket: this.bucket,
-      Key: fileKey,
-    });
+    const endpoint = this.getEndpoint();
+    const url = `${endpoint}/${this.config.bucket}/${fileKey}`;
 
-    await this.s3Client.send(command);
+    const authorization = await this.generateAuthorization(
+      'DELETE',
+      `/${this.config.bucket}/${fileKey}`,
+      {}
+    );
+
+    try {
+      const response = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+          Authorization: authorization,
+        },
+      });
+
+      if (!response.ok && response.status !== 204) {
+        throw new Error(`S3 delete failed: ${response.status} ${response.statusText}`);
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(`S3 delete failed: ${String(error)}`);
+    }
+  }
+
+  private getEndpoint(): string {
+    if (this.config.endpoint) {
+      return this.config.endpoint;
+    }
+
+    if (this.config.forcePathStyle) {
+      return `https://s3.${this.config.region}.amazonaws.com`;
+    }
+
+    return `https://${this.config.bucket}.s3.${this.config.region}.amazonaws.com`;
+  }
+
+  private async generateAuthorization(
+    method: string,
+    path: string,
+    headers: Record<string, string>
+  ): Promise<string> {
+    const now = new Date();
+    const amzDate = this.getAmzDate(now);
+    const dateStamp = this.getDateStamp(now);
+
+    // Canonical request
+    const canonicalHeaders = this.getCanonicalHeaders(headers);
+    const signedHeaders = this.getSignedHeaders(headers);
+    const payloadHash = 'UNSIGNED-PAYLOAD';
+
+    const canonicalRequest = [
+      method,
+      path,
+      '', // Query string
+      canonicalHeaders,
+      signedHeaders,
+      payloadHash,
+    ].join('\n');
+
+    const canonicalRequestHash = await this.sha256(canonicalRequest);
+
+    // String to sign
+    const credentialScope = `${dateStamp}/${this.config.region}/s3/aws4_request`;
+    const stringToSign = ['AWS4-HMAC-SHA256', amzDate, credentialScope, canonicalRequestHash].join(
+      '\n'
+    );
+
+    // Calculate signature
+    const signingKey = await this.getSigningKey(dateStamp);
+    const signature = await this.hmac(signingKey, stringToSign);
+
+    // Authorization header
+    return `AWS4-HMAC-SHA256 Credential=${this.config.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  }
+
+  private getAmzDate(date: Date): string {
+    return date
+      .toISOString()
+      .replace(/[:-]|.\d{3}/g, '')
+      .replace(/T/, 'T');
+  }
+
+  private getDateStamp(date: Date): string {
+    return date.toISOString().substring(0, 10).replace(/-/g, '');
+  }
+
+  private getCanonicalHeaders(headers: Record<string, string>): string {
+    const canonicalHeaders: string[] = [];
+    const lowerCaseHeaders: Record<string, string> = {};
+
+    for (const [key, value] of Object.entries(headers)) {
+      lowerCaseHeaders[key.toLowerCase()] = value.trim();
+    }
+
+    for (const [key, value] of Object.entries(lowerCaseHeaders).sort()) {
+      canonicalHeaders.push(`${key}:${value}\n`);
+    }
+
+    return canonicalHeaders.join('');
+  }
+
+  private getSignedHeaders(headers: Record<string, string>): string {
+    const lowerCaseHeaders = Object.keys(headers).map((h) => h.toLowerCase());
+    return lowerCaseHeaders.sort().join(';');
+  }
+
+  private async sha256(message: string): Promise<string> {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(message);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  private async hmac(key: Buffer, message: string): Promise<string> {
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      key,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    const encoder = new TextEncoder();
+    const data = encoder.encode(message);
+    const signature = await crypto.subtle.sign('HMAC', cryptoKey, data);
+    const signatureArray = Array.from(new Uint8Array(signature));
+    return signatureArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  private async getSigningKey(dateStamp: string): Promise<Buffer> {
+    const kDate = await this.hmacSha256(`AWS4${this.config.secretAccessKey}`, dateStamp);
+    const kRegion = await this.hmacSha256(kDate, this.config.region);
+    const kService = await this.hmacSha256(kRegion, 's3');
+    const kSigning = await this.hmacSha256(kService, 'aws4_request');
+    return kSigning;
+  }
+
+  private async hmacSha256(key: string | Buffer, message: string): Promise<Buffer> {
+    const keyBuffer = typeof key === 'string' ? Buffer.from(key) : key;
+    const encoder = new TextEncoder();
+    const data = encoder.encode(message);
+
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      keyBuffer,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    const signature = await crypto.subtle.sign('HMAC', cryptoKey, data);
+    return Buffer.from(signature);
   }
 
   private generateFileKey(contentType: string): string {

@@ -7,9 +7,7 @@ import {
   INodeExecutionData,
   NodeOperationError,
 } from 'n8n-workflow';
-import { Readable } from 'stream';
 import { createStorageDriver, StorageDriver } from '../../drivers';
-import { fileTypeFromBuffer } from 'file-type';
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = [
@@ -50,7 +48,7 @@ export class BinaryBridge implements INodeType {
     group: ['transform'],
     version: 1,
     subtitle: '={{$parameter["operation"]}}',
-    description: 'Upload binary files to storage and proxy them via public URL',
+    description: 'Upload binary files to S3 storage and proxy them via public URL',
     defaults: {
       name: 'Binary Bridge',
     },
@@ -60,11 +58,6 @@ export class BinaryBridge implements INodeType {
       {
         name: 'awsS3Api',
         displayName: 'AWS S3 Credentials',
-        required: true,
-      },
-      {
-        name: 'supabaseApi',
-        displayName: 'Supabase Credentials',
         required: true,
       },
     ],
@@ -89,11 +82,6 @@ export class BinaryBridge implements INodeType {
             value: 's3',
             description:
               'Use AWS S3 or S3-compatible storage (Alibaba OSS, Tencent COS, MinIO, etc.)',
-          },
-          {
-            name: 'Supabase',
-            value: 'supabase',
-            description: 'Use Supabase Storage',
           },
         ],
         default: 's3',
@@ -189,20 +177,6 @@ export class BinaryBridge implements INodeType {
         },
         description: 'Use path-style addressing (for MinIO, DigitalOcean Spaces, etc.)',
       },
-      {
-        displayName: 'Project URL',
-        name: 'projectUrl',
-        type: 'string',
-        default: '',
-        required: true,
-        displayOptions: {
-          show: {
-            storageDriver: ['supabase'],
-          },
-        },
-        placeholder: 'https://your-project.supabase.co',
-        description: 'Supabase project URL',
-      },
     ],
   };
 
@@ -227,7 +201,6 @@ export class BinaryBridge implements INodeType {
 
       throw new NodeOperationError(this.getNode(), `Unknown operation: ${operation}`);
     } catch (error) {
-      // Enhance error messages with context
       if (error instanceof Error) {
         throw new NodeOperationError(this.getNode(), `Operation failed: ${error.message}`);
       }
@@ -294,12 +267,12 @@ export class BinaryBridge implements INodeType {
     }
 
     try {
-      const { stream, contentType } = await storage.downloadStream(fileKey);
+      const { data, contentType } = await storage.downloadStream(fileKey);
 
       return {
         webhookResponse: {
           status: 200,
-          body: stream,
+          body: data.toString('base64'),
           headers: {
             'Content-Type': contentType,
             'Cache-Control': 'public, max-age=86400',
@@ -343,19 +316,8 @@ async function handleUpload(
 
     const buffer = Buffer.from(binaryData.data, 'base64');
 
-    // Try to detect MIME type from file signature using file-type
-    let contentType = binaryData.mimeType || 'application/octet-stream';
-    try {
-      const detection = await fileTypeFromBuffer(buffer);
-      if (detection) {
-        contentType = detection.mime;
-      }
-    } catch (error) {
-      // Fall back to provided MIME type or default
-      console.warn(
-        `Failed to detect MIME type: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
+    // Use provided MIME type or default
+    const contentType = binaryData.mimeType || 'application/octet-stream';
 
     if (!ALLOWED_MIME_TYPES.includes(contentType)) {
       throw new NodeOperationError(
@@ -372,9 +334,7 @@ async function handleUpload(
       );
     }
 
-    const uploadStream = Readable.from(buffer);
-
-    const result = await storage.uploadStream(uploadStream, contentType);
+    const result = await storage.uploadStream(buffer, contentType);
 
     const proxyUrl = `${webhookBaseUrl}/${result.fileKey}`;
 

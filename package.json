@@ -1,7 +1,7 @@
 {
   "name": "n8n-nodes-binary-to-url",
-  "version": "1.0.0",
-  "description": "n8n community node for binary file to public URL bridge with S3 and Supabase storage",
+  "version": "0.0.2",
+  "description": "n8n community node for binary file to public URL bridge with S3 storage",
   "keywords": [
     "n8n-community-node-package",
     "n8n",
@@ -9,7 +9,6 @@
     "file",
     "storage",
     "s3",
-    "supabase",
     "proxy",
     "webhook",
     "to-url"
@@ -44,11 +43,7 @@
       "dist/nodes/BinaryBridge/BinaryBridge.node.js"
     ]
   },
-  "dependencies": {
-    "@aws-sdk/client-s3": "^3.600.0",
-    "@supabase/supabase-js": "^2.39.0",
-    "file-type": "^21.3.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^20.0.0",
