@@ -56,7 +56,7 @@ export class BinaryToUrl implements INodeType {
     outputs: ['main'],
     credentials: [
       {
-        name: 's3StorageApi',
+        name: 's3Api',
         required: true,
       },
     ],

@@ -18,7 +18,7 @@ export async function createStorageDriver(
   context: IExecuteFunctions | IWebhookFunctions,
   bucket: string
 ): Promise<StorageDriver> {
-  const credentials = await context.getCredentials('s3StorageApi');
+  const credentials = await context.getCredentials('s3Api');
 
   if (!credentials) {
     throw new Error('No S3 credentials found. Please configure S3 credentials.');
@@ -28,13 +28,19 @@ export async function createStorageDriver(
   const endpoint = context.getNodeParameter('endpoint', 0) as string;
   const forcePathStyle = context.getNodeParameter('forcePathStyle', 0) as boolean;
 
-  // Extract credentials - handle both direct access and data wrapper
-  const creds = (credentials.data || credentials) as Record<string, string>;
+  // Extract credentials from S3 API credential
+  const creds = credentials as Record<string, string>;
 
-  // Support multiple field naming conventions
-  const accessKeyId = creds.accessKeyId || creds.access_key_id;
-  const secretAccessKey =
-    creds.secretAccessKey || creds.secret_access_key;
+  const accessKeyId = creds.accessKeyId || '';
+  const secretAccessKey = creds.secretAccessKey || '';
+  const credentialEndpoint = creds.s3Api;
+  const credentialRegion = creds.region;
+
+  // Use credential endpoint if node parameter is empty
+  const finalEndpoint = endpoint || credentialEndpoint;
+
+  // Use credential region if node parameter is empty
+  const finalRegion = region || credentialRegion || 'us-east-1';
 
   if (!accessKeyId || !secretAccessKey) {
     throw new Error('Invalid credentials. Missing access key or secret key.');
@@ -45,16 +51,16 @@ export async function createStorageDriver(
 
   // Force path style by default if custom endpoint is provided
   // This is needed for MinIO, Wasabi, DigitalOcean Spaces, Alibaba OSS, Tencent COS, etc.
-  if (endpoint && endpoint !== '') {
+  if (finalEndpoint && finalEndpoint !== '') {
     shouldForcePathStyle = true;
   }
 
   const config: S3StorageConfig = {
     accessKeyId: accessKeyId as string,
     secretAccessKey: secretAccessKey as string,
-    region: region || 'us-east-1',
+    region: finalRegion,
     bucket,
-    endpoint: endpoint || undefined,
+    endpoint: finalEndpoint || undefined,
     forcePathStyle: shouldForcePathStyle,
   };
 

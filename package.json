@@ -40,7 +40,7 @@
     "n8nNodesApiVersion": 1,
     "strict": true,
     "credentials": [
-      "dist/credentials/S3StorageApi.credentials.js"
+      "dist/credentials/S3Api.credentials.js"
     ],
     "nodes": [
       "dist/nodes/BinaryToUrl/BinaryToUrl.node.js"

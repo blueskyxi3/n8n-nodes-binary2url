@@ -4,10 +4,10 @@ import type {
 	INodeProperties,
 } from 'n8n-workflow';
 
-export class S3StorageApi implements ICredentialType {
-	name = 's3StorageApi';
+export class S3Api implements ICredentialType {
+	name = 's3Api';
 
-	displayName = 'S3 Storage API';
+	displayName = 'S3 API';
 
 	icon: Icon = 'file:../icons/BinaryToUrl.svg';
 
@@ -28,11 +28,27 @@ export class S3StorageApi implements ICredentialType {
 			typeOptions: { password: true },
 			default: '',
 		},
+		{
+			displayName: 'Region',
+			name: 'region',
+			type: 'string',
+			default: 'us-east-1',
+			description: 'AWS region (e.g., us-east-1, eu-west-1)',
+		},
+		{
+			displayName: 'S3 Endpoint',
+			name: 's3Api',
+			type: 'string',
+			default: '',
+			placeholder: 'https://s3.amazonaws.com',
+			description:
+				'S3-compatible service endpoint (required for MinIO, DigitalOcean Spaces, Wasabi, etc.). Leave empty for AWS S3.',
+		},
 	];
 
 	test = {
 		request: {
-			baseURL: '={{$credentials.endpoint}}',
+			baseURL: '={{$credentials.s3Api}}',
 			url: '=/',
 			method: 'GET' as const,
 		},
