@@ -22,14 +22,6 @@
     "resolveJsonModule": true,
     "moduleResolution": "node"
   },
-  "include": [
-    "nodes/**/*",
-    "drivers/**/*",
-    "index.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "**/*.test.ts"
-  ]
+  "include": ["nodes/**/*", "drivers/**/*", "index.ts"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }

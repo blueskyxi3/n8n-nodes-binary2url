@@ -56,6 +56,7 @@ https://your-n8n-instance/webhook/{workflowId}/binarybridge/file/{fileKey}
 ```
 
 The webhook supports:
+
 - **GET** requests to download files
 - **Content-Type** header with correct MIME type
 - **Cache-Control**: 24-hour cache
@@ -64,6 +65,7 @@ The webhook supports:
 ## Architecture
 
 This node implements a **Single-Node Proxy** architecture:
+
 - Handles file upload to S3 storage
 - Acts as a webhook server for file streaming
 - Creates a data loop without external dependencies
