@@ -42,27 +42,21 @@ const ALLOWED_MIME_TYPES = [
 
 export class BinaryBridge implements INodeType {
   description: INodeTypeDescription = {
-    displayName: 'Binary Bridge',
-    name: 'binaryBridge',
+    displayName: 'Binary to URL',
+    name: 'binaryToUrl',
     icon: 'file:BinaryBridge.svg',
     group: ['transform'],
     version: 1,
     subtitle: '={{$parameter["operation"]}}',
     description: 'Upload binary files to S3 storage and proxy them via public URL',
     defaults: {
-      name: 'Binary Bridge',
+      name: 'Binary to URL',
     },
     inputs: ['main'],
     outputs: ['main'],
     credentials: [
       {
         name: 'awsS3',
-        displayName: 'S3 Compatible',
-        required: true,
-      },
-      {
-        name: 'awsS3Api',
-        displayName: 'AWS S3',
         required: true,
       },
     ],

@@ -18,45 +18,23 @@ export async function createStorageDriver(
   context: IExecuteFunctions | IWebhookFunctions,
   bucket: string
 ): Promise<StorageDriver> {
-  // Try S3 Compatible credentials first (MinIO, Wasabi, DigitalOcean, Alibaba OSS, Tencent COS, etc.)
-  let credentials: any = null;
-  let isAwsS3 = false;
-
-  try {
-    credentials = await context.getCredentials('awsS3');
-    if (credentials) {
-      isAwsS3 = false;
-    }
-  } catch (error) {
-    // S3 Compatible credentials not found, try AWS S3
-  }
-
-  // If S3 Compatible credentials not found, try AWS S3 API credentials
-  if (!credentials) {
-    try {
-      credentials = await context.getCredentials('awsS3Api');
-      if (credentials) {
-        isAwsS3 = true;
-      }
-    } catch (error) {
-      // AWS S3 credentials not found
-    }
-  }
+  const credentials = await context.getCredentials('awsS3');
 
   if (!credentials) {
-    throw new Error(
-      'No S3 credentials found. Please configure either "S3 Compatible" or "AWS S3" credentials.'
-    );
+    throw new Error('No S3 credentials found. Please configure S3 credentials.');
   }
 
   const region = context.getNodeParameter('region', 0) as string;
   const endpoint = context.getNodeParameter('endpoint', 0) as string;
   const forcePathStyle = context.getNodeParameter('forcePathStyle', 0) as boolean;
 
-  // Extract credentials - different credential types may use different field names
-  const accessKeyId = credentials.accessKeyId || credentials.access_key_id;
+  // Extract credentials - handle both direct access and data wrapper
+  const creds = (credentials.data || credentials) as Record<string, any>;
+
+  // Support multiple field naming conventions
+  const accessKeyId = creds.accessKeyId || creds.access_key_id;
   const secretAccessKey =
-    credentials.secretAccessKey || credentials.secret_access_key || credentials.secret_access_key;
+    creds.secretAccessKey || creds.secret_access_key;
 
   if (!accessKeyId || !secretAccessKey) {
     throw new Error('Invalid credentials. Missing access key or secret key.');
@@ -65,12 +43,10 @@ export async function createStorageDriver(
   // Auto-determine if path style should be forced
   let shouldForcePathStyle = forcePathStyle;
 
-  // For S3 Compatible services (awsS3), force path style by default if endpoint is provided
+  // Force path style by default if custom endpoint is provided
   // This is needed for MinIO, Wasabi, DigitalOcean Spaces, Alibaba OSS, Tencent COS, etc.
-  if (!isAwsS3) {
-    if (endpoint && endpoint !== '') {
-      shouldForcePathStyle = true;
-    }
+  if (endpoint && endpoint !== '') {
+    shouldForcePathStyle = true;
   }
 
   const config: S3StorageConfig = {
