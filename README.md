@@ -67,8 +67,8 @@ sudo systemctl restart n8n
 
 ```json
 {
-  "fileKey": "1736567890123-a1b2c3d4e5f6g7h8",
-  "proxyUrl": "http://127.0.0.1:5678/webhook/xxx/file?fileKey=1736567890123-a1b2c3d4e5f6g7h8",
+  "fileKey": "550e8400-e29b-41d4-a716-446655440000",
+  "proxyUrl": "http://127.0.0.1:5678/webhook/xxx/file?fileKey=550e8400-e29b-41d4-a716-446655440000",
   "contentType": "image/jpeg",
   "fileSize": 245678
 }

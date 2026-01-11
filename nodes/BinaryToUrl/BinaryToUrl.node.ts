@@ -322,7 +322,6 @@ function isValidFileKey(fileKey: string): boolean {
   if (!fileKey || typeof fileKey !== 'string') {
     return false;
   }
-  // Format: {timestamp}-{16-char-hex}
-  const fileKeyPattern = /^[0-9]+-[a-f0-9]{16}$/i;
-  return fileKeyPattern.test(fileKey);
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  return uuidPattern.test(fileKey);
 }

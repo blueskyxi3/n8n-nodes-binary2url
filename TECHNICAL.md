@@ -148,12 +148,12 @@ Response:
 ### File Key Format
 
 ```
-Pattern: {timestamp}-{16-char-hex}
-Example: 1736567890123-a1b2c3d4e5f6g7h8
-Regex:   /^[0-9]+-[a-f0-9]{16}$/i
+Pattern: UUID v4
+Example: 550e8400-e29b-41d4-a716-446655440000
+Regex:   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 ```
 
-**Security**: Uses `crypto.randomBytes(8)` for cryptographically secure random generation.
+**Security**: Uses `crypto.randomUUID()` for cryptographically secure random generation.
 
 ---
 
@@ -206,16 +206,18 @@ const ALLOWED_MIME_TYPES = [
 
 | Operation | Complexity | Notes |
 |-----------|------------|-------|
-| Upload | O(1) average | O(n) worst case if cleanup needed |
+| Upload | O(1) average | O(log n) heap push + O(log n) binary search + O(n) worst case if cleanup needed |
 | Download | O(1) | Direct Map.get() with TTL check |
-| Cleanup | O(n) | Lazy: only when expiration imminent |
+| Cleanup (Workflow) | O(k) | k = number of expired files |
+| Cleanup (Global) | O(k log n) | k = number of files to delete, heap pop is O(log n) |
 
 ### Optimizations
 
 1. **Lazy Cleanup**: Only scans cache when `nextExpirationTime` is reached
 2. **Expiration Tracking**: Each workflow tracks earliest expiration time
 3. **Early Exit**: Skip cleanup if expiration time in future
-4. **Secure Random**: Uses `crypto.randomBytes()` instead of `Math.random()`
+4. **Min-Heap for Global Cleanup**: Uses binary min-heap for O(log n) removal of oldest files globally
+5. **Secure Random**: Uses `crypto.randomUUID()` instead of `Math.random()`
 
 ---
 
