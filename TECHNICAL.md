@@ -25,6 +25,23 @@ Architecture, API, and development guide for the Binary to URL n8n node.
 └─────────────────────────────────┘
 ```
 
+### Webhook Registration
+
+The node uses a **dual-registration** approach to ensure webhooks are properly registered:
+
+1. **Automatic Registration** (via `description.webhooks`)
+   - n8n automatically reads webhook configuration
+   - Registers when workflow is activated
+   - Config: `httpMethod`, `responseMode`, `path`
+
+2. **Manual Registration** (via `webhookMethods`)
+   - Explicit control over webhook lifecycle
+   - `checkExists`: Verify webhook is registered
+   - `create`: Register webhook in n8n's database
+   - `delete`: Unregister webhook when workflow stops
+
+This ensures compatibility across different n8n versions and deployment scenarios.
+
 ### Storage Model
 
 **Workflow-Isolated In-Memory Storage:**
