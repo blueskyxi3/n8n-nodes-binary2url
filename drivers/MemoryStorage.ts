@@ -51,6 +51,7 @@ export class MemoryStorage {
     if (this.logger) {
       this.logger.warn(message);
     } else {
+      // eslint-disable-next-line no-console
       console.warn(`[MemoryStorage] ${message}`);
     }
   }
@@ -87,7 +88,7 @@ export class MemoryStorage {
     if (existingLock) {
       try {
         return await existingLock;
-      } catch (error) {
+      } catch {
         // If existing lock failed, remove it and continue
         this.uploadLocks.delete(workflowId);
       }
