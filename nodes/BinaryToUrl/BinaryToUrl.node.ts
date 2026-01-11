@@ -7,7 +7,7 @@ import {
   INodeExecutionData,
   NodeOperationError,
 } from 'n8n-workflow';
-import { MemoryStorage } from '../../drivers/MemoryStorage';
+import { MemoryStorage } from '../../drivers/MemoryStorage.js';
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = [
@@ -124,7 +124,6 @@ export class BinaryToUrl implements INodeType {
       },
     ],
     usableAsTool: true,
-    // Note: When used as a tool, the workflow must be active for webhook file access to work
   };
 
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
@@ -220,27 +219,23 @@ async function handleUpload(
   const binaryPropertyName = context.getNodeParameter('binaryPropertyName', 0) as string;
   const ttl = context.getNodeParameter('ttl', 0) as number;
 
-  // Validate TTL
-  const MIN_TTL = 60; // 1 minute
-  const MAX_TTL = 604800; // 7 days
+  const MIN_TTL = 60;
+  const MAX_TTL = 604800;
   if (ttl < MIN_TTL) {
     throw new NodeOperationError(
       context.getNode(),
-      `TTL must be at least ${MIN_TTL} seconds (1 minute). Got: ${ttl}`
+      `TTL must be at least ${MIN_TTL} seconds. Got: ${ttl}`
     );
   }
   if (ttl > MAX_TTL) {
     throw new NodeOperationError(
       context.getNode(),
-      `TTL cannot exceed ${MAX_TTL} seconds (7 days). Got: ${ttl}`
+      `TTL cannot exceed ${MAX_TTL} seconds. Got: ${ttl}`
     );
   }
 
-  // Get workflow ID for storage isolation
   const workflow = context.getWorkflow();
   const workflowId = workflow.id as string;
-
-  // Build webhook URL using n8n's instance base URL and workflow ID
   const baseUrl = context.getInstanceBaseUrl();
   const webhookUrl = `${baseUrl}/webhook/${workflowId}/file/:fileKey`;
 
@@ -256,7 +251,6 @@ async function handleUpload(
       );
     }
 
-    // Convert binary data to buffer, handling multiple formats
     let buffer: Buffer;
     const data = binaryData.data;
 
@@ -265,7 +259,6 @@ async function handleUpload(
     } else if (typeof data === 'string') {
       buffer = Buffer.from(data, 'base64');
     } else if (data && typeof data === 'object') {
-      // Handle { $binary: string } format
       const binaryValue = (data as { $binary?: string } | Record<string, unknown>).$binary || data;
       buffer = Buffer.from(binaryValue as string, 'base64');
     } else {
@@ -275,7 +268,6 @@ async function handleUpload(
       );
     }
 
-    // Use provided MIME type or default
     const contentType = binaryData.mimeType || 'application/octet-stream';
 
     if (!ALLOWED_MIME_TYPES.includes(contentType)) {
@@ -293,10 +285,7 @@ async function handleUpload(
       );
     }
 
-    // Upload with workflow isolation
     const result = await MemoryStorage.upload(workflowId, buffer, contentType, ttl * 1000);
-
-    // Replace the :fileKey placeholder with the actual file key
     const proxyUrl = webhookUrl.replace(':fileKey', result.fileKey);
 
     context.logger.info(
@@ -356,8 +345,6 @@ function isValidFileKey(fileKey: string): boolean {
   if (!fileKey || typeof fileKey !== 'string') {
     return false;
   }
-
-  // Pattern matches: timestamp-random (e.g., 1736567890123-abc123def456)
   const fileKeyPattern = /^[0-9]+-[a-z0-9]+$/i;
   return fileKeyPattern.test(fileKey);
 }

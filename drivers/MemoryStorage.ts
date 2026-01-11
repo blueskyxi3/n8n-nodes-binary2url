@@ -10,12 +10,11 @@ interface WorkflowCache {
   cacheSize: number;
 }
 
-// Simple in-memory storage with TTL, isolated by workflow ID
 export class MemoryStorage {
   private static workflowCaches = new Map<string, WorkflowCache>();
-  private static readonly DEFAULT_TTL = 60 * 60 * 1000; // 1 hour
-  private static readonly MAX_CACHE_SIZE = 100 * 1024 * 1024; // 100 MB per workflow
-  private static readonly GLOBAL_MAX_CACHE_SIZE = 500 * 1024 * 1024; // 500 MB total
+  private static readonly DEFAULT_TTL = 60 * 60 * 1000;
+  private static readonly MAX_CACHE_SIZE = 100 * 1024 * 1024;
+  private static readonly GLOBAL_MAX_CACHE_SIZE = 500 * 1024 * 1024;
   private static globalCacheSize = 0;
 
   private static getOrCreateWorkflowCache(workflowId: string): WorkflowCache {
@@ -45,7 +44,6 @@ export class MemoryStorage {
     const expiresAt = now + (ttl || this.DEFAULT_TTL);
     const fileSize = data.length;
 
-    // Check global cache size
     if (this.globalCacheSize + fileSize > this.GLOBAL_MAX_CACHE_SIZE) {
       this.cleanupAllExpired();
       if (this.globalCacheSize + fileSize > this.GLOBAL_MAX_CACHE_SIZE) {
@@ -55,7 +53,6 @@ export class MemoryStorage {
 
     const workflowCache = this.getOrCreateWorkflowCache(workflowId);
 
-    // Check workflow-specific cache size
     if (workflowCache.cacheSize + fileSize > this.MAX_CACHE_SIZE) {
       this.cleanupWorkflowExpired(workflowId);
       if (workflowCache.cacheSize + fileSize > this.MAX_CACHE_SIZE) {
@@ -92,7 +89,6 @@ export class MemoryStorage {
       return null;
     }
 
-    // Check if expired
     if (Date.now() > file.expiresAt) {
       this.delete(workflowId, fileKey);
       return null;
@@ -144,7 +140,6 @@ export class MemoryStorage {
     if (!workflowCache) return;
 
     const entries = Array.from(workflowCache.cache.entries());
-    // Sort by upload time (oldest first)
     entries.sort((a, b) => a[1].uploadedAt - b[1].uploadedAt);
 
     let freedSpace = 0;
@@ -157,7 +152,6 @@ export class MemoryStorage {
   }
 
   static cleanupOldestGlobal(requiredSpace: number): void {
-    // Collect all files from all workflows
     const allFiles: Array<{ workflowId: string; fileKey: string; file: MemoryFile }> = [];
     for (const [workflowId, workflowCache] of this.workflowCaches.entries()) {
       for (const [fileKey, file] of workflowCache.cache.entries()) {
@@ -165,7 +159,6 @@ export class MemoryStorage {
       }
     }
 
-    // Sort by upload time (oldest first)
     allFiles.sort((a, b) => a.file.uploadedAt - b.file.uploadedAt);
 
     let freedSpace = 0;
