@@ -125,7 +125,11 @@ output: {
 ### Webhook Endpoint
 
 ```
-GET /webhook/{workflowId}/file/{fileKey}
+GET /webhook/{webhookId}/file/{fileKey}
+
+or (if webhookId is not set):
+
+GET /webhook/{workflowId}/{nodeName}/file/{fileKey}
 
 Response:
   Status 200: File content with correct Content-Type
@@ -133,6 +137,8 @@ Response:
   Status 404: File not found or expired
   Status 500: Server error
 ```
+
+**Note:** The webhook URL is automatically generated using n8n's `getNodeWebhookUrl()` helper function, which ensures the correct URL format based on the workflow and node configuration.
 
 ### File Key Format
 

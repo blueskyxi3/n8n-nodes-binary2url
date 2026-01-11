@@ -6,6 +6,7 @@ import {
   IWebhookResponseData,
   INodeExecutionData,
   NodeOperationError,
+  getNodeWebhookUrl,
 } from 'n8n-workflow';
 import { MemoryStorage } from '../../drivers/MemoryStorage.js';
 
@@ -48,7 +49,7 @@ export class BinaryToUrl implements INodeType {
     group: ['transform'],
     version: 1,
     subtitle: '={{$parameter["operation"]}}',
-    description: 'Create temporary URLs for binary files within a workflow execution',
+    description: 'Store binary files in memory and retrieve them by key',
     defaults: {
       name: 'Binary to URL',
     },
@@ -73,7 +74,7 @@ export class BinaryToUrl implements INodeType {
           {
             name: 'Upload',
             value: 'upload',
-            description: 'Create temporary URL for binary file',
+            description: 'Store binary file in memory',
             action: 'Upload file',
           },
           {
@@ -98,7 +99,7 @@ export class BinaryToUrl implements INodeType {
         description: 'Name of binary property containing the file to upload',
       },
       {
-        displayName: 'URL Expiration Time (Seconds)',
+        displayName: 'TTL (Seconds)',
         name: 'ttl',
         type: 'number',
         displayOptions: {
@@ -107,8 +108,7 @@ export class BinaryToUrl implements INodeType {
           },
         },
         default: 600,
-        description: 'How long the URL remains valid (default: 600 seconds = 10 minutes)',
-        hint: 'This is for temporary use within a workflow. For short-term sharing, use 300-3600 seconds. For workflow-internal use, 60-600 seconds is recommended.',
+        description: 'How long the file remains valid in memory (default: 600 seconds)',
       },
       {
         displayName: 'File Key',
@@ -120,7 +120,7 @@ export class BinaryToUrl implements INodeType {
           },
         },
         default: '',
-        description: 'Key of the file to delete from memory',
+        description: 'Key of the file to delete',
       },
     ],
     usableAsTool: true,
@@ -236,10 +236,12 @@ async function handleUpload(
 
   const workflow = context.getWorkflow();
   const workflowId = workflow.id as string;
+  const node = context.getNode();
   const baseUrl = context.getInstanceBaseUrl();
-  // Remove trailing slash and ensure clean URL
-  const cleanBaseUrl = baseUrl.replace(/\/+$/, '');
-  const webhookUrl = `${cleanBaseUrl}/webhook/${workflowId}/file/:fileKey`;
+
+  // Use n8n's getNodeWebhookUrl helper to build the correct webhook URL
+  // The webhook path is 'file/:fileKey' as defined in node description
+  const webhookUrlTemplate = getNodeWebhookUrl(baseUrl, workflowId, node, 'file/:fileKey', false);
 
   const returnData: INodeExecutionData[] = [];
 
@@ -288,7 +290,7 @@ async function handleUpload(
     }
 
     const result = await MemoryStorage.upload(workflowId, buffer, contentType, ttl * 1000);
-    const proxyUrl = webhookUrl.replace(':fileKey', result.fileKey);
+    const proxyUrl = webhookUrlTemplate.replace(':fileKey', result.fileKey);
 
     context.logger.info(
       `File uploaded: ${result.fileKey}, size: ${fileSize}, contentType: ${contentType}, TTL: ${ttl}s`
