@@ -7,15 +7,8 @@ import {
   INodeExecutionData,
   NodeOperationError,
   getNodeWebhookUrl,
-  IHookFunctions,
 } from 'n8n-workflow';
 import { MemoryStorage } from '../../drivers/MemoryStorage.js';
-
-// Extended interface for webhook registration methods
-interface IHookFunctionsExtended extends IHookFunctions {
-  addWebhookToDatabase?(webhookUrl: string, httpMethod: string, path: string, restartWebhook?: boolean): Promise<void>;
-  removeWebhookFromDatabase?(webhookUrl: string, httpMethod: string, path: string): Promise<void>;
-}
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = [
@@ -55,8 +48,7 @@ export class BinaryToUrl implements INodeType {
     icon: 'file:BinaryToUrl.svg',
     group: ['transform'],
     version: 1,
-    subtitle: '={{$parameter["operation"]}}',
-    description: 'Store binary files in memory and retrieve them by key',
+    description: 'Store binary files temporarily in memory and retrieve via webhook URL',
     defaults: {
       name: 'Binary to URL',
     },
@@ -73,35 +65,9 @@ export class BinaryToUrl implements INodeType {
     ],
     properties: [
       {
-        displayName: 'Operation',
-        name: 'operation',
-        type: 'options',
-        noDataExpression: true,
-        options: [
-          {
-            name: 'Upload',
-            value: 'upload',
-            description: 'Store binary file in memory',
-            action: 'Upload file',
-          },
-          {
-            name: 'Delete',
-            value: 'delete',
-            description: 'Delete file from memory',
-            action: 'Delete file',
-          },
-        ],
-        default: 'upload',
-      },
-      {
         displayName: 'Binary Property',
         name: 'binaryPropertyName',
         type: 'string',
-        displayOptions: {
-          show: {
-            operation: ['upload'],
-          },
-        },
         default: 'data',
         description: 'Name of binary property containing the file to upload',
       },
@@ -109,83 +75,15 @@ export class BinaryToUrl implements INodeType {
         displayName: 'TTL (Seconds)',
         name: 'ttl',
         type: 'number',
-        displayOptions: {
-          show: {
-            operation: ['upload'],
-          },
-        },
         default: 600,
-        description: 'How long the file remains valid in memory (default: 600 seconds)',
-      },
-      {
-        displayName: 'File Key',
-        name: 'fileKey',
-        type: 'string',
-        displayOptions: {
-          show: {
-            operation: ['delete'],
-          },
-        },
-        default: '',
-        description: 'Key of the file to delete',
+        description: 'How long the file remains accessible (60-604800 seconds, default: 600)',
       },
     ],
     usableAsTool: true,
   };
 
-  webhookMethods = {
-    default: {
-      async checkExists(this: IHookFunctions): Promise<boolean> {
-        const webhookUrl = this.getNodeWebhookUrl('default');
-        return !!webhookUrl;
-      },
-      async create(this: IHookFunctionsExtended): Promise<boolean> {
-        // Get webhook ID from node
-        const webhookId = this.getNodeWebhookUrl('default')?.split('/').pop();
-        if (!webhookId) {
-          throw new NodeOperationError(this.getNode(), 'Failed to get webhook ID');
-        }
-
-        const webhookUrl = this.getNodeWebhookUrl('default');
-        if (!webhookUrl) {
-          throw new NodeOperationError(this.getNode(), 'Failed to get webhook URL');
-        }
-
-        // Register webhook in n8n's database
-        // Parameters: webhookUrl, httpMethod, path, restartWebhook
-        if (this.addWebhookToDatabase) {
-          await this.addWebhookToDatabase(webhookUrl, 'GET', 'file', true);
-        }
-
-        return true;
-      },
-      async delete(this: IHookFunctionsExtended): Promise<boolean> {
-        const webhookUrl = this.getNodeWebhookUrl('default');
-        if (!webhookUrl) {
-          return true;
-        }
-
-        // Unregister webhook from database
-        if (this.removeWebhookFromDatabase) {
-          await this.removeWebhookFromDatabase(webhookUrl, 'GET', 'file');
-        }
-
-        return true;
-      },
-    },
-  };
-
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
-    const items = this.getInputData();
-    const operation = this.getNodeParameter('operation', 0) as string;
-
-    if (operation === 'upload') {
-      return handleUpload(this, items);
-    } else if (operation === 'delete') {
-      return handleDelete(this, items);
-    }
-
-    throw new NodeOperationError(this.getNode(), `Unknown operation: ${operation}`);
+    return handleUpload(this, this.getInputData());
   }
 
   async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
@@ -292,7 +190,6 @@ async function handleUpload(
   const cleanBaseUrl = baseUrl.replace(/\/+$/, '');
 
   // Build webhook URL: /webhook/{webhookId or workflowId}/file
-  // getNodeWebhookUrl returns the path part, we need to prepend baseUrl and /webhook
   const webhookPath = getNodeWebhookUrl('', workflowId, node, 'file', false).replace(/^\/+/, '');
   const webhookUrlBase = `${cleanBaseUrl}/webhook/${webhookPath}`;
 
@@ -303,9 +200,6 @@ async function handleUpload(
       'Failed to generate webhook URL. Please check your n8n configuration.'
     );
   }
-
-  // URL template with query parameter
-  const webhookUrlTemplate = `${webhookUrlBase}?fileKey=:fileKey`;
 
   const returnData: INodeExecutionData[] = [];
 
@@ -354,7 +248,7 @@ async function handleUpload(
     }
 
     const result = await MemoryStorage.upload(workflowId, buffer, contentType, ttl * 1000);
-    const proxyUrl = webhookUrlTemplate.replace(':fileKey', result.fileKey);
+    const proxyUrl = `${webhookUrlBase}?fileKey=${result.fileKey}`;
 
     context.logger.info(
       `File uploaded: ${result.fileKey}, size: ${fileSize}, contentType: ${contentType}, TTL: ${ttl}s`
@@ -368,41 +262,6 @@ async function handleUpload(
         fileSize,
       },
       binary: item.binary,
-    });
-  }
-
-  return [returnData];
-}
-
-async function handleDelete(
-  context: IExecuteFunctions,
-  items: INodeExecutionData[]
-): Promise<INodeExecutionData[][]> {
-  const workflow = context.getWorkflow();
-  const workflowId = workflow.id as string;
-
-  const returnData: INodeExecutionData[] = [];
-
-  for (const item of items) {
-    const fileKey = (item.json.fileKey || context.getNodeParameter('fileKey', 0)) as string;
-
-    if (!fileKey) {
-      throw new NodeOperationError(context.getNode(), 'File key is required for delete operation');
-    }
-
-    const deleted = await MemoryStorage.delete(workflowId, fileKey);
-
-    if (deleted) {
-      context.logger.info(`File deleted: ${fileKey}`);
-    } else {
-      context.logger.warn(`File not found for deletion: ${fileKey}`);
-    }
-
-    returnData.push({
-      json: {
-        success: deleted,
-        deleted: fileKey,
-      },
     });
   }
 
