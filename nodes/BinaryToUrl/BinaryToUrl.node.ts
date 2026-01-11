@@ -281,12 +281,16 @@ async function handleUpload(
   const node = context.getNode();
   const baseUrl = context.getInstanceBaseUrl();
 
-  // Use n8n's getNodeWebhookUrl helper to build the correct webhook URL
-  // The webhook path is 'file' with fileKey as query parameter
-  const webhookUrlBase = getNodeWebhookUrl(baseUrl, workflowId, node, 'file', false);
+  // Remove trailing slash from baseUrl if present
+  const cleanBaseUrl = baseUrl.replace(/\/+$/, '');
+
+  // Build webhook URL: /webhook/{webhookId or workflowId}/file
+  // getNodeWebhookUrl returns the path part, we need to prepend baseUrl and /webhook
+  const webhookPath = getNodeWebhookUrl('', workflowId, node, 'file', false);
+  const webhookUrlBase = `${cleanBaseUrl}/webhook/${webhookPath}`;
 
   // Validate that the webhook URL was generated successfully
-  if (!webhookUrlBase) {
+  if (!webhookUrlBase || !webhookUrlBase.includes('/webhook/')) {
     throw new NodeOperationError(
       context.getNode(),
       'Failed to generate webhook URL. Please check your n8n configuration.'
