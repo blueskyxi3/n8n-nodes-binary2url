@@ -237,7 +237,7 @@ async function handleUpload(
   const workflow = context.getWorkflow();
   const workflowId = workflow.id as string;
   const baseUrl = context.getInstanceBaseUrl();
-  const webhookUrl = `${baseUrl}/webhook/${workflowId}/file/:fileKey`;
+  const webhookUrl = `${baseUrl.replace(/\/$/, '')}/webhook/${workflowId}/file/:fileKey`;
 
   const returnData: INodeExecutionData[] = [];
 
