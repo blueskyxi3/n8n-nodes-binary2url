@@ -9,37 +9,13 @@ import {
   getNodeWebhookUrl,
 } from 'n8n-workflow';
 import { MemoryStorage } from '../../drivers/MemoryStorage.js';
-
-const MAX_FILE_SIZE = 100 * 1024 * 1024;
-const ALLOWED_MIME_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'image/gif',
-  'image/webp',
-  'image/svg+xml',
-  'image/bmp',
-  'image/tiff',
-  'image/avif',
-  'video/mp4',
-  'video/webm',
-  'video/quicktime',
-  'video/x-msvideo',
-  'video/x-matroska',
-  'application/pdf',
-  'application/zip',
-  'application/x-rar-compressed',
-  'application/x-7z-compressed',
-  'audio/mpeg',
-  'audio/wav',
-  'audio/ogg',
-  'audio/flac',
-  'text/plain',
-  'text/csv',
-  'application/json',
-  'application/xml',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-];
+import {
+  TTL,
+  CACHE_LIMITS,
+  ALLOWED_MIME_TYPES,
+  DOWNLOAD_MIME_TYPES,
+  HTTP_HEADERS,
+} from '../../config/constants.js';
 
 export class BinaryToUrl implements INodeType {
   description: INodeTypeDescription = {
@@ -83,6 +59,8 @@ export class BinaryToUrl implements INodeType {
   };
 
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
+    // Initialize logger for MemoryStorage
+    MemoryStorage.setLogger(this.logger);
     return handleUpload(this, this.getInputData());
   }
 
@@ -117,11 +95,16 @@ export class BinaryToUrl implements INodeType {
       }
 
       // Return binary file directly
+      const isDownload = DOWNLOAD_MIME_TYPES.includes(result.contentType);
+      const disposition = isDownload
+        ? HTTP_HEADERS.DISPOSITION_ATTACHMENT
+        : HTTP_HEADERS.DISPOSITION_INLINE;
+
       response.writeHead(200, {
         'Content-Type': result.contentType,
         'Content-Length': result.data.length,
-        'Cache-Control': 'public, max-age=86400',
-        'Content-Disposition': 'inline',
+        'Cache-Control': HTTP_HEADERS.CACHE_CONTROL,
+        'Content-Disposition': disposition,
       });
       response.end(result.data);
 
@@ -153,7 +136,10 @@ function generateWebhookUrl(
   if (!webhookPath) {
     throw new NodeOperationError(
       context.getNode(),
-      'Failed to generate webhook path. Please check your n8n configuration.'
+      'Failed to generate webhook path. This is usually caused by:\n' +
+      '1. Workflow not saved - Make sure to save the workflow before executing\n' +
+      '2. n8n configuration issue - Check that n8n is properly configured\n' +
+      '3. Workflow ID is invalid - Try recreating the workflow node'
     );
   }
 
@@ -167,7 +153,9 @@ function generateWebhookUrl(
   if (!webhookUrl.includes('/webhook/')) {
     throw new NodeOperationError(
       context.getNode(),
-      'Generated webhook URL has invalid format. Please check your n8n configuration.'
+      `Generated webhook URL has invalid format: ${webhookUrl}\n` +
+      `Expected format: ${cleanBaseUrl}/webhook/{path}/file\n` +
+      `Please check your n8n version and configuration.`
     );
   }
 
@@ -177,7 +165,11 @@ function generateWebhookUrl(
 /**
  * Convert n8n binary data to Buffer
  */
-function binaryToBuffer(binaryData: { data: Buffer | string | { $binary?: string } }, mimeType: string): Buffer {
+function binaryToBuffer(
+  binaryData: { data: Buffer | string | { $binary?: string } },
+  mimeType: string,
+  context: IExecuteFunctions
+): Buffer {
   const data = binaryData.data;
 
   if (Buffer.isBuffer(data)) {
@@ -193,28 +185,45 @@ function binaryToBuffer(binaryData: { data: Buffer | string | { $binary?: string
     return Buffer.from(binaryValue as string, 'base64');
   }
 
-  throw new Error(`Unsupported binary data format: ${typeof data}`);
+  throw new NodeOperationError(
+    context.getNode(),
+    `Unsupported binary data format: ${typeof data}`
+  );
 }
 
 async function handleUpload(
   context: IExecuteFunctions,
   items: INodeExecutionData[]
 ): Promise<INodeExecutionData[][]> {
-  const binaryPropertyName = context.getNodeParameter('binaryPropertyName', 0) as string;
-  const ttl = context.getNodeParameter('ttl', 0) as number;
-
-  const MIN_TTL = 60;
-  const MAX_TTL = 604800;
-  if (ttl < MIN_TTL) {
+  // Validate input
+  if (!items || items.length === 0) {
     throw new NodeOperationError(
       context.getNode(),
-      `TTL must be at least ${MIN_TTL} seconds. Got: ${ttl}`
+      'No input data provided'
     );
   }
-  if (ttl > MAX_TTL) {
+
+  const binaryPropertyName = context.getNodeParameter('binaryPropertyName', 0) as string;
+
+  if (!binaryPropertyName || binaryPropertyName.trim() === '') {
     throw new NodeOperationError(
       context.getNode(),
-      `TTL cannot exceed ${MAX_TTL} seconds. Got: ${ttl}`
+      'Binary property name cannot be empty'
+    );
+  }
+
+  const ttl = context.getNodeParameter('ttl', 0) as number;
+
+  if (ttl < TTL.MIN) {
+    throw new NodeOperationError(
+      context.getNode(),
+      `TTL must be at least ${TTL.MIN} seconds. Got: ${ttl}`
+    );
+  }
+  if (ttl > TTL.MAX) {
+    throw new NodeOperationError(
+      context.getNode(),
+      `TTL cannot exceed ${TTL.MAX} seconds. Got: ${ttl}`
     );
   }
 
@@ -235,15 +244,7 @@ async function handleUpload(
     }
 
     // Convert binary data to Buffer
-    let buffer: Buffer;
-    try {
-      buffer = binaryToBuffer(binaryData, binaryData.mimeType || 'application/octet-stream');
-    } catch (error) {
-      throw new NodeOperationError(
-        context.getNode(),
-        `Failed to convert binary data: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
+    const buffer = binaryToBuffer(binaryData, binaryData.mimeType || 'application/octet-stream', context);
 
     const contentType = binaryData.mimeType || 'application/octet-stream';
 
@@ -255,10 +256,10 @@ async function handleUpload(
     }
 
     const fileSize = buffer.length;
-    if (fileSize > MAX_FILE_SIZE) {
+    if (fileSize > CACHE_LIMITS.MAX_FILE_SIZE) {
       throw new NodeOperationError(
         context.getNode(),
-        `File size exceeds maximum limit of ${MAX_FILE_SIZE / 1024 / 1024}MB`
+        `File size exceeds maximum limit of ${CACHE_LIMITS.MAX_FILE_SIZE / 1024 / 1024}MB`
       );
     }
 

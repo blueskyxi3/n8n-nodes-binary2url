@@ -1,4 +1,6 @@
 import { randomBytes } from 'crypto';
+import type { Logger } from 'n8n-workflow';
+import { TTL, CACHE_LIMITS, CLEANUP } from '../config/constants.js';
 
 interface MemoryFile {
   data: Buffer;
@@ -11,23 +13,46 @@ interface WorkflowCache {
   cache: Map<string, MemoryFile>;
   cacheSize: number;
   nextExpirationTime?: number;
+  expirationQueue: Array<{ fileKey: string; expiresAt: number }>; // Sorted by expiration time
 }
 
 export class MemoryStorage {
   private static workflowCaches = new Map<string, WorkflowCache>();
-  private static readonly DEFAULT_TTL = 60 * 60 * 1000;
-  private static readonly MAX_CACHE_SIZE = 100 * 1024 * 1024;
-  private static readonly GLOBAL_MAX_CACHE_SIZE = 500 * 1024 * 1024;
+  private static readonly DEFAULT_TTL = TTL.DEFAULT;
+  private static readonly MAX_CACHE_SIZE = CACHE_LIMITS.MAX_CACHE_SIZE;
+  private static readonly GLOBAL_MAX_CACHE_SIZE = CACHE_LIMITS.GLOBAL_MAX_CACHE_SIZE;
   private static globalCacheSize = 0;
   private static nextGlobalExpirationTime?: number;
   private static cleanupInterval?: NodeJS.Timeout;
-  private static readonly MAX_DELETE_PER_CLEANUP = 100; // Prevent excessive deletion
+  private static readonly MAX_DELETE_PER_CLEANUP = CLEANUP.MAX_DELETE_PER_CLEANUP;
+  private static readonly MIN_FILES_TO_KEEP = CLEANUP.MIN_FILES_TO_KEEP;
+  private static readonly VALIDATION_THRESHOLD = CLEANUP.VALIDATION_THRESHOLD;
+  private static logger?: Logger; // Optional logger for warnings
+
+  // Concurrency control: per-workflow upload locks
+  private static uploadLocks = new Map<string, Promise<{ fileKey: string; contentType: string }>>();
+
+  /**
+   * Set logger instance for MemoryStorage warnings
+   */
+  static setLogger(logger: Logger): void {
+    this.logger = logger;
+  }
+
+  private static warn(message: string): void {
+    if (this.logger) {
+      this.logger.warn(message);
+    } else {
+      console.warn(`[MemoryStorage] ${message}`);
+    }
+  }
 
   private static getOrCreateWorkflowCache(workflowId: string): WorkflowCache {
     if (!this.workflowCaches.has(workflowId)) {
       this.workflowCaches.set(workflowId, {
         cache: new Map(),
         cacheSize: 0,
+        expirationQueue: [],
       });
     }
     return this.workflowCaches.get(workflowId)!;
@@ -44,6 +69,32 @@ export class MemoryStorage {
   }
 
   static async upload(
+    workflowId: string,
+    data: Buffer,
+    contentType: string,
+    ttl?: number
+  ): Promise<{ fileKey: string; contentType: string }> {
+    // Wait for any existing upload for this workflow to complete
+    const existingLock = this.uploadLocks.get(workflowId);
+    if (existingLock) {
+      await existingLock;
+    }
+
+    // Create new lock for this upload
+    const lockPromise = (async () => {
+      try {
+        return await this.uploadInternal(workflowId, data, contentType, ttl);
+      } finally {
+        // Release lock
+        this.uploadLocks.delete(workflowId);
+      }
+    })();
+
+    this.uploadLocks.set(workflowId, lockPromise);
+    return lockPromise;
+  }
+
+  private static async uploadInternal(
     workflowId: string,
     data: Buffer,
     contentType: string,
@@ -93,16 +144,38 @@ export class MemoryStorage {
       // Subtract old file size before replacing
       workflowCache.cacheSize = Math.max(0, workflowCache.cacheSize - existingFile.data.length);
       this.globalCacheSize = Math.max(0, this.globalCacheSize - existingFile.data.length);
+
+      // Remove from expiration queue
+      const queueIndex = workflowCache.expirationQueue.findIndex(e => e.fileKey === fileKey);
+      if (queueIndex !== -1) {
+        workflowCache.expirationQueue.splice(queueIndex, 1);
+      }
     }
 
     workflowCache.cache.set(fileKey, file);
     workflowCache.cacheSize += fileSize;
     this.globalCacheSize += fileSize;
 
-    // Update next expiration times
-    if (!workflowCache.nextExpirationTime || expiresAt < workflowCache.nextExpirationTime) {
-      workflowCache.nextExpirationTime = expiresAt;
+    // Add to expiration queue using binary search insertion (O(log n) + O(n) splice)
+    const entry = { fileKey, expiresAt };
+    let insertIndex = workflowCache.expirationQueue.length;
+    let left = 0;
+    let right = workflowCache.expirationQueue.length - 1;
+
+    while (left <= right) {
+      const mid = Math.floor((left + right) / 2);
+      if (workflowCache.expirationQueue[mid].expiresAt <= expiresAt) {
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+        insertIndex = mid;
+      }
     }
+
+    workflowCache.expirationQueue.splice(insertIndex, 0, entry);
+
+    // Update next expiration times (O(1) - just get first element)
+    workflowCache.nextExpirationTime = workflowCache.expirationQueue[0]?.expiresAt;
     if (!this.nextGlobalExpirationTime || expiresAt < this.nextGlobalExpirationTime) {
       this.nextGlobalExpirationTime = expiresAt;
     }
@@ -149,18 +222,20 @@ export class MemoryStorage {
 
     const deleted = workflowCache.cache.delete(fileKey);
 
-    // Update next expiration time if needed
-    if (deleted && workflowCache.cache.size === 0) {
-      workflowCache.nextExpirationTime = undefined;
-    } else if (deleted) {
-      // Find the earliest expiration time
-      let minExpiration = Infinity;
-      for (const [, f] of workflowCache.cache.entries()) {
-        if (f.expiresAt < minExpiration) {
-          minExpiration = f.expiresAt;
-        }
+    if (deleted) {
+      // Remove from expiration queue
+      const queueIndex = workflowCache.expirationQueue.findIndex(e => e.fileKey === fileKey);
+      if (queueIndex !== -1) {
+        workflowCache.expirationQueue.splice(queueIndex, 1);
       }
-      workflowCache.nextExpirationTime = minExpiration === Infinity ? undefined : minExpiration;
+
+      // Update next expiration time (O(1) - just get first element)
+      if (workflowCache.cache.size === 0) {
+        workflowCache.nextExpirationTime = undefined;
+        workflowCache.expirationQueue = [];
+      } else {
+        workflowCache.nextExpirationTime = workflowCache.expirationQueue[0]?.expiresAt;
+      }
     }
 
     return deleted;
@@ -170,33 +245,24 @@ export class MemoryStorage {
     const workflowCache = this.workflowCaches.get(workflowId);
     if (!workflowCache) return;
 
-    // Skip cleanup if no files or next expiration is in the future
+    // Skip cleanup if no files
     if (workflowCache.cache.size === 0) return;
+
+    // Skip if next expiration is in the future
     if (workflowCache.nextExpirationTime && Date.now() < workflowCache.nextExpirationTime) {
       return;
     }
 
     const now = Date.now();
-    let hasDeleted = false;
 
-    for (const [key, file] of workflowCache.cache.entries()) {
-      if (now > file.expiresAt) {
-        this.delete(workflowId, key);
-        hasDeleted = true;
+    // Remove expired files from the front of the queue (it's sorted by expiration time)
+    while (workflowCache.expirationQueue.length > 0) {
+      const { fileKey, expiresAt } = workflowCache.expirationQueue[0];
+      if (now <= expiresAt) {
+        // Reached non-expired files, stop cleanup
+        break;
       }
-    }
-
-    // Update next expiration time after cleanup
-    if (hasDeleted && workflowCache.cache.size > 0) {
-      let minExpiration = Infinity;
-      for (const [, f] of workflowCache.cache.entries()) {
-        if (f.expiresAt < minExpiration) {
-          minExpiration = f.expiresAt;
-        }
-      }
-      workflowCache.nextExpirationTime = minExpiration === Infinity ? undefined : minExpiration;
-    } else if (workflowCache.cache.size === 0) {
-      workflowCache.nextExpirationTime = undefined;
+      this.delete(workflowId, fileKey);
     }
   }
 
@@ -208,17 +274,36 @@ export class MemoryStorage {
       return;
     }
 
+    // Collect expired files first, then delete to avoid race conditions
+    const expiredFiles: Array<{ workflowId: string; fileKey: string }> = [];
+
     for (const [workflowId, workflowCache] of this.workflowCaches.entries()) {
       // Skip workflow if its next expiration is in the future
       if (workflowCache.nextExpirationTime && now < workflowCache.nextExpirationTime) {
         continue;
       }
 
-      for (const [key, file] of workflowCache.cache.entries()) {
-        if (now > file.expiresAt) {
-          this.delete(workflowId, key);
+      // Use expiration queue for efficient cleanup
+      while (workflowCache.expirationQueue.length > 0) {
+        const { fileKey, expiresAt } = workflowCache.expirationQueue[0];
+        if (now <= expiresAt) {
+          break;
         }
+        expiredFiles.push({ workflowId, fileKey });
+        workflowCache.expirationQueue.shift(); // Remove from queue
       }
+
+      // Update workflow's next expiration time
+      if (workflowCache.cache.size > 0) {
+        workflowCache.nextExpirationTime = workflowCache.expirationQueue[0]?.expiresAt;
+      } else {
+        workflowCache.nextExpirationTime = undefined;
+      }
+    }
+
+    // Delete collected expired files
+    for (const { workflowId, fileKey } of expiredFiles) {
+      this.delete(workflowId, fileKey);
     }
 
     // Update global next expiration time
@@ -251,16 +336,23 @@ export class MemoryStorage {
         break;
       }
 
+      // Always keep at least MIN_FILES_TO_KEEP files
+      const remainingFiles = entries.length - deletedCount;
+      if (remainingFiles <= this.MIN_FILES_TO_KEEP) {
+        break;
+      }
+
       freedSpace += file.data.length;
       this.delete(workflowId, key);
       deletedCount++;
     }
 
     // Log warning if we couldn't free enough space
-    if (freedSpace < requiredSpace && deletedCount < entries.length) {
-      console.warn(
-        `[MemoryStorage] Hit max delete limit (${this.MAX_DELETE_PER_CLEANUP}) ` +
-        `but still need ${requiredSpace - freedSpace} bytes for workflow ${workflowId}`
+    if (freedSpace < requiredSpace && deletedCount < entries.length - this.MIN_FILES_TO_KEEP) {
+      this.warn(
+        `Could not free enough space for workflow ${workflowId}. ` +
+        `Needed: ${requiredSpace} bytes, freed: ${freedSpace} bytes. ` +
+        `Keeping ${this.MIN_FILES_TO_KEEP} files as minimum.`
       );
     }
   }
@@ -291,8 +383,8 @@ export class MemoryStorage {
 
     // Log warning if we couldn't free enough space
     if (freedSpace < requiredSpace && deletedCount < allFiles.length) {
-      console.warn(
-        `[MemoryStorage] Hit max delete limit (${this.MAX_DELETE_PER_CLEANUP}) ` +
+      this.warn(
+        `Hit max delete limit (${this.MAX_DELETE_PER_CLEANUP}) ` +
         `but still need ${requiredSpace - freedSpace} bytes globally`
       );
     }
@@ -326,16 +418,95 @@ export class MemoryStorage {
           this.globalCacheSize = Math.max(0, this.globalCacheSize - file.data.length);
         }
         workflowCache.cache.clear();
+        workflowCache.expirationQueue = [];
         workflowCache.cacheSize = 0;
         workflowCache.nextExpirationTime = undefined;
       }
     } else {
       for (const [, workflowCache] of this.workflowCaches.entries()) {
+        workflowCache.expirationQueue = [];
         workflowCache.nextExpirationTime = undefined;
       }
       this.workflowCaches.clear();
       this.globalCacheSize = 0;
       this.nextGlobalExpirationTime = undefined;
     }
+  }
+
+  /**
+   * Validate and correct cache size inconsistencies
+   * This helps recover from potential bugs that cause cacheSize to drift
+   */
+  static validateCacheSize(workflowId: string): boolean {
+    const workflowCache = this.workflowCaches.get(workflowId);
+    if (!workflowCache) return false;
+
+    let actualSize = 0;
+    for (const [, file] of workflowCache.cache.entries()) {
+      actualSize += file.data.length;
+    }
+
+    // If discrepancy exceeds threshold, warn and correct
+    if (Math.abs(workflowCache.cacheSize - actualSize) > this.VALIDATION_THRESHOLD) {
+      this.warn(
+        `Cache size mismatch for workflow ${workflowId}: ` +
+        `recorded=${workflowCache.cacheSize}, actual=${actualSize}. Correcting...`
+      );
+      workflowCache.cacheSize = actualSize;
+
+      // Also recalculate global cache size
+      let globalActual = 0;
+      for (const wc of this.workflowCaches.values()) {
+        for (const [, file] of wc.cache.entries()) {
+          globalActual += file.data.length;
+        }
+      }
+      if (Math.abs(this.globalCacheSize - globalActual) > this.VALIDATION_THRESHOLD) {
+        this.warn(
+          `Global cache size mismatch: ` +
+          `recorded=${this.globalCacheSize}, actual=${globalActual}. Correcting...`
+        );
+        this.globalCacheSize = globalActual;
+      }
+
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Get storage statistics
+   */
+  static getStats(workflowId?: string): {
+    workflowCount: number;
+    totalFiles: number;
+    totalCacheSize: number;
+    workflowFiles?: number;
+    workflowCacheSize?: number;
+  } {
+    const stats = {
+      workflowCount: this.workflowCaches.size,
+      totalFiles: 0,
+      totalCacheSize: this.globalCacheSize,
+    } as {
+      workflowCount: number;
+      totalFiles: number;
+      totalCacheSize: number;
+      workflowFiles?: number;
+      workflowCacheSize?: number;
+    };
+
+    for (const workflowCache of this.workflowCaches.values()) {
+      stats.totalFiles += workflowCache.cache.size;
+    }
+
+    if (workflowId) {
+      const workflowCache = this.workflowCaches.get(workflowId);
+      stats.workflowFiles = workflowCache?.cache.size ?? 0;
+      stats.workflowCacheSize = workflowCache?.cacheSize ?? 0;
+    }
+
+    return stats;
   }
 }
