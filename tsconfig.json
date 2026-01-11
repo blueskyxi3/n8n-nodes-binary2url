@@ -20,8 +20,9 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "moduleResolution": "node"
+    "moduleResolution": "node",
+    "downlevelIteration": true
   },
-  "include": ["nodes/**/*", "drivers/**/*"],
+  "include": ["index.ts", "nodes/**/*", "drivers/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
