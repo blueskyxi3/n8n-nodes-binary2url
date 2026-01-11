@@ -68,20 +68,39 @@ export class BinaryToUrl implements INodeType {
     const query = this.getQueryData();
     const fileKey = (query as { fileKey?: string }).fileKey;
     const workflow = this.getWorkflow();
-    const workflowId = workflow.id as string;
+    const workflowId = workflow.id;
 
     // Get the native response object
     const response = this.getResponseObject();
 
+    // Validate workflowId type
+    if (typeof workflowId !== 'string' || !workflowId) {
+      const errorBody = JSON.stringify({ error: 'Invalid workflow ID' });
+      response.writeHead(500, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(errorBody),
+      });
+      response.end(errorBody);
+      return { noWebhookResponse: true };
+    }
+
     if (!fileKey) {
-      response.writeHead(400, { 'Content-Type': 'application/json' });
-      response.end(JSON.stringify({ error: 'Missing fileKey' }));
+      const errorBody = JSON.stringify({ error: 'Missing fileKey' });
+      response.writeHead(400, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(errorBody),
+      });
+      response.end(errorBody);
       return { noWebhookResponse: true };
     }
 
     if (!isValidFileKey(fileKey)) {
-      response.writeHead(400, { 'Content-Type': 'application/json' });
-      response.end(JSON.stringify({ error: 'Invalid fileKey' }));
+      const errorBody = JSON.stringify({ error: 'Invalid fileKey' });
+      response.writeHead(400, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(errorBody),
+      });
+      response.end(errorBody);
       return { noWebhookResponse: true };
     }
 
@@ -89,8 +108,12 @@ export class BinaryToUrl implements INodeType {
       const result = await MemoryStorage.download(workflowId, fileKey);
 
       if (!result) {
-        response.writeHead(404, { 'Content-Type': 'application/json' });
-        response.end(JSON.stringify({ error: 'File not found or expired' }));
+        const errorBody = JSON.stringify({ error: 'File not found or expired' });
+        response.writeHead(404, {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(errorBody),
+        });
+        response.end(errorBody);
         return { noWebhookResponse: true };
       }
 
@@ -110,11 +133,14 @@ export class BinaryToUrl implements INodeType {
 
       return { noWebhookResponse: true };
     } catch (error) {
-      this.logger.error(
-        `Error downloading file: ${error instanceof Error ? error.message : String(error)}`
-      );
-      response.writeHead(500, { 'Content-Type': 'application/json' });
-      response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Error downloading file: ${errorMessage}`);
+      const errorBody = JSON.stringify({ error: errorMessage });
+      response.writeHead(500, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(errorBody),
+      });
+      response.end(errorBody);
       return { noWebhookResponse: true };
     }
   }
@@ -228,7 +254,16 @@ async function handleUpload(
   }
 
   const workflow = context.getWorkflow();
-  const workflowId = workflow.id as string;
+  const workflowId = workflow.id;
+
+  // Validate workflowId type
+  if (typeof workflowId !== 'string' || !workflowId) {
+    throw new NodeOperationError(
+      context.getNode(),
+      'Invalid workflow ID: expected a non-empty string'
+    );
+  }
+
   const webhookUrlBase = generateWebhookUrl(context, workflowId);
 
   const returnData: INodeExecutionData[] = [];

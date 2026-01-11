@@ -170,22 +170,36 @@ export class MemoryStorage {
     workflowCache.cacheSize += fileSize;
     this.globalCacheSize += fileSize;
 
-    // Add to expiration queue using binary search insertion (O(log n) + O(n) splice)
+    // Add to expiration queue using binary search insertion
+    // Time complexity: O(log n) for search + O(n) for splice insertion
+    // This is more efficient than O(n log n) for sort after each insertion
     const entry = { fileKey, expiresAt };
+
+    // Initialize insertIndex to append at the end (default position)
     let insertIndex = workflowCache.expirationQueue.length;
     let left = 0;
     let right = workflowCache.expirationQueue.length - 1;
 
+    // Binary search to find the correct insertion point
+    // We want to insert before the first element with expiresAt > new expiresAt
+    // This maintains the queue sorted by expiration time (ascending)
     while (left <= right) {
       const mid = Math.floor((left + right) / 2);
-      if (workflowCache.expirationQueue[mid].expiresAt <= expiresAt) {
+      const midExpiresAt = workflowCache.expirationQueue[mid].expiresAt;
+
+      // If mid element expires before or at the same time as new element,
+      // the insertion point must be to the right of mid
+      if (midExpiresAt <= expiresAt) {
         left = mid + 1;
       } else {
+        // Mid element expires after new element, so we insert before it
+        // Keep searching in the left half for a potentially earlier position
         right = mid - 1;
         insertIndex = mid;
       }
     }
 
+    // Insert at the calculated position (splice handles shifting)
     workflowCache.expirationQueue.splice(insertIndex, 0, entry);
 
     // Update next expiration times (O(1) - just get first element)
