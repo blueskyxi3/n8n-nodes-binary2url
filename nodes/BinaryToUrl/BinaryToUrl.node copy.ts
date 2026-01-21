@@ -8,6 +8,7 @@ import {
   NodeOperationError,
   getNodeWebhookUrl,
 } from 'n8n-workflow';
+import { MemoryStorage } from '../../drivers/MemoryStorage.js';
 import {
   TTL,
   CACHE_LIMITS,
@@ -16,10 +17,6 @@ import {
   HTTP_HEADERS,
 } from '../../config/constants.js';
 
-
-import { LocalStorage } from '../../drivers/LocalStorage.js';
-
-
 export class BinaryToUrl implements INodeType {
   description: INodeTypeDescription = {
     displayName: 'Binary to URL',
@@ -27,7 +24,7 @@ export class BinaryToUrl implements INodeType {
     icon: 'file:BinaryToUrl.svg',
     group: ['transform'],
     version: 1,
-    description: 'Store binary files temporarily on local disk and retrieve via webhook URL',
+    description: 'Store binary files temporarily in memory and retrieve via webhook URL',
     defaults: {
       name: 'Binary to URL',
     },
@@ -60,18 +57,22 @@ export class BinaryToUrl implements INodeType {
     ],
     usableAsTool: true,
   };
+
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
-    // Initialize logger for LocalStorage
-    LocalStorage.setLogger(this.logger);
+    // Initialize logger for MemoryStorage
+    MemoryStorage.setLogger(this.logger);
     return handleUpload(this, this.getInputData());
   }
+
   async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
     const query = this.getQueryData();
     const fileKey = (query as { fileKey?: string }).fileKey;
     const workflow = this.getWorkflow();
     const workflowId = workflow.id;
+
     // Get the native response object
     const response = this.getResponseObject();
+
     // Validate workflowId type
     if (typeof workflowId !== 'string' || !workflowId) {
       const errorBody = JSON.stringify({ error: 'Invalid workflow ID' });
@@ -82,6 +83,7 @@ export class BinaryToUrl implements INodeType {
       response.end(errorBody);
       return { noWebhookResponse: true };
     }
+
     if (!fileKey) {
       const errorBody = JSON.stringify({ error: 'Missing fileKey' });
       response.writeHead(400, {
@@ -91,6 +93,7 @@ export class BinaryToUrl implements INodeType {
       response.end(errorBody);
       return { noWebhookResponse: true };
     }
+
     if (!isValidFileKey(fileKey)) {
       const errorBody = JSON.stringify({ error: 'Invalid fileKey' });
       response.writeHead(400, {
@@ -100,8 +103,10 @@ export class BinaryToUrl implements INodeType {
       response.end(errorBody);
       return { noWebhookResponse: true };
     }
+
     try {
-      const result = await LocalStorage.download(workflowId, fileKey);
+      const result = await MemoryStorage.download(workflowId, fileKey);
+
       if (!result) {
         const errorBody = JSON.stringify({ error: 'File not found or expired' });
         response.writeHead(404, {
@@ -111,11 +116,13 @@ export class BinaryToUrl implements INodeType {
         response.end(errorBody);
         return { noWebhookResponse: true };
       }
+
       // Return binary file directly
       const isDownload = DOWNLOAD_MIME_TYPES.includes(result.contentType);
       const disposition = isDownload
         ? HTTP_HEADERS.DISPOSITION_ATTACHMENT
         : HTTP_HEADERS.DISPOSITION_INLINE;
+
       response.writeHead(200, {
         'Content-Type': result.contentType,
         'Content-Length': result.data.length,
@@ -123,6 +130,7 @@ export class BinaryToUrl implements INodeType {
         'Content-Disposition': disposition,
       });
       response.end(result.data);
+
       return { noWebhookResponse: true };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -137,6 +145,7 @@ export class BinaryToUrl implements INodeType {
     }
   }
 }
+
 /**
  * Generate webhook URL for file downloads
  * @returns Base webhook URL (without query parameters)
@@ -147,6 +156,7 @@ function generateWebhookUrl(
 ): string {
   const node = context.getNode();
   const baseUrl = context.getInstanceBaseUrl();
+
   // Get webhook path from n8n
   const webhookPath = getNodeWebhookUrl('', workflowId, node, 'file', false);
   if (!webhookPath) {
@@ -158,10 +168,13 @@ function generateWebhookUrl(
       '3. Workflow ID is invalid - Try recreating the workflow node'
     );
   }
+
   // Clean and build URL: remove extra slashes
   const cleanBaseUrl = baseUrl.replace(/\/+$/, '');
   const cleanPath = webhookPath.replace(/^\/+/, '');
+
   const webhookUrl = `${cleanBaseUrl}/webhook/${cleanPath}`;
+
   // Validate URL format
   if (!webhookUrl.includes('/webhook/')) {
     throw new NodeOperationError(
@@ -171,8 +184,10 @@ function generateWebhookUrl(
       `Please check your n8n version and configuration.`
     );
   }
+
   return webhookUrl;
 }
+
 /**
  * Convert n8n binary data to Buffer
  */
@@ -182,21 +197,26 @@ function binaryToBuffer(
   context: IExecuteFunctions
 ): Buffer {
   const data = binaryData.data;
+
   if (Buffer.isBuffer(data)) {
     return data;
   }
+
   if (typeof data === 'string') {
     return Buffer.from(data, 'base64');
   }
+
   if (data && typeof data === 'object') {
     const binaryValue = (data as { $binary?: string }).$binary || data;
     return Buffer.from(binaryValue as string, 'base64');
   }
+
   throw new NodeOperationError(
     context.getNode(),
     `Unsupported binary data format: ${typeof data}`
   );
 }
+
 async function handleUpload(
   context: IExecuteFunctions,
   items: INodeExecutionData[]
@@ -208,14 +228,18 @@ async function handleUpload(
       'No input data provided'
     );
   }
+
   const binaryPropertyName = context.getNodeParameter('binaryPropertyName', 0) as string;
+
   if (!binaryPropertyName || binaryPropertyName.trim() === '') {
     throw new NodeOperationError(
       context.getNode(),
       'Binary property name cannot be empty'
     );
   }
+
   const ttl = context.getNodeParameter('ttl', 0) as number;
+
   if (ttl < TTL.MIN) {
     throw new NodeOperationError(
       context.getNode(),
@@ -228,8 +252,10 @@ async function handleUpload(
       `TTL cannot exceed ${TTL.MAX} seconds. Got: ${ttl}`
     );
   }
+
   const workflow = context.getWorkflow();
   const workflowId = workflow.id;
+
   // Validate workflowId type
   if (typeof workflowId !== 'string' || !workflowId) {
     throw new NodeOperationError(
@@ -237,25 +263,33 @@ async function handleUpload(
       'Invalid workflow ID: expected a non-empty string'
     );
   }
+
   const webhookUrlBase = generateWebhookUrl(context, workflowId);
+
   const returnData: INodeExecutionData[] = [];
+
   for (const item of items) {
     const binaryData = item.binary?.[binaryPropertyName];
+
     if (!binaryData) {
       throw new NodeOperationError(
         context.getNode(),
         `No binary data found in property "${binaryPropertyName}"`
       );
     }
+
     // Convert binary data to Buffer
     const buffer = binaryToBuffer(binaryData, binaryData.mimeType || 'application/octet-stream', context);
+
     const contentType = binaryData.mimeType || 'application/octet-stream';
+
     if (!ALLOWED_MIME_TYPES.includes(contentType)) {
       throw new NodeOperationError(
         context.getNode(),
         `MIME type "${contentType}" is not allowed. Allowed types: ${ALLOWED_MIME_TYPES.join(', ')}`
       );
     }
+
     const fileSize = buffer.length;
     if (fileSize > CACHE_LIMITS.MAX_FILE_SIZE) {
       throw new NodeOperationError(
@@ -263,11 +297,14 @@ async function handleUpload(
         `File size exceeds maximum limit of ${CACHE_LIMITS.MAX_FILE_SIZE / 1024 / 1024}MB`
       );
     }
-    const result = await LocalStorage.upload(workflowId, buffer, contentType, ttl * 1000);
+
+    const result = await MemoryStorage.upload(workflowId, buffer, contentType, ttl * 1000);
     const proxyUrl = `${webhookUrlBase}?fileKey=${result.fileKey}`;
+
     context.logger.info(
       `File uploaded: ${result.fileKey}, size: ${fileSize}, contentType: ${contentType}, ttl: ${ttl}s`
     );
+
     returnData.push({
       json: {
         fileKey: result.fileKey,
@@ -277,8 +314,10 @@ async function handleUpload(
       },
     });
   }
+
   return [returnData];
 }
+
 function isValidFileKey(fileKey: string): boolean {
   if (!fileKey || typeof fileKey !== 'string') {
     return false;

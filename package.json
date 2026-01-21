@@ -1,5 +1,5 @@
 {
-  "name": "n8n-nodes-binary-to-url",
+  "name": "n8n-nodes-binary2url",
   "version": "0.1.21",
   "description": "n8n community node for creating temporary URLs for binary files within workflow execution",
   "keywords": [
@@ -17,12 +17,12 @@
   "license": "MIT",
   "homepage": "",
   "author": {
-    "name": "wwrs",
-    "email": "ksxh0524@outlook.com"
+    "name": "vincentzou",
+    "email": "343854933@qq.com"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ksxh0524/n8n-nodes-binary-to-url.git"
+    "url": "https://github.com/blueskyxi3/n8n-nodes-binary2url.git"
   },
   "main": "dist/index.js",
   "scripts": {

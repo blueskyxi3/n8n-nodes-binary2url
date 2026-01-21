@@ -67,7 +67,7 @@ Files are stored in memory and automatically deleted after expiration (TTL).
 ## Installation
 
 ```bash
-npm install n8n-nodes-binary-to-url
+npm install n8n-nodes-binary2url
 ```
 
 Then restart n8n:
